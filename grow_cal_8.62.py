@@ -1,19 +1,30 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import math
 from datetime import date, timedelta
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Master Grow Logic", page_icon="🧪", layout="wide")
 
-# --- CUSTOM CSS ---
+# --- CUSTOM CSS FOR MOBILE ---
 st.markdown("""
     <style>
     .stApp { background-color: #0e1117; color: #d0d0d0; }
-    .stMetric { background-color: #1f2937; padding: 15px; border-radius: 8px; border: 1px solid #374151; }
+    .stMetric { background-color: #1f2937; padding: 10px; border-radius: 8px; border: 1px solid #374151; }
     div[data-testid="stExpander"] { background-color: #1f2937; border-radius: 8px; }
     h1, h2, h3 { color: #10b981; }
     .big-font { font-size: 20px !important; font-weight: bold; color: #10b981; }
+    
+    /* Mobile optimization for buttons */
+    div.stButton > button:first-child {
+        width: 100%;
+        border-radius: 12px;
+        height: 3em;
+        font-weight: bold;
+        background-color: #10b981;
+        color: white;
+        border: none;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -41,7 +52,7 @@ tab_yield, tab_power, tab_extract, tab_reverse = st.tabs([
 with tab_yield:
     st.header("Yield Prediction Engine")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("1. Environment")
@@ -53,15 +64,18 @@ with tab_yield:
         
     with col2:
         st.subheader("2. Lighting")
-        true_watts = st.number_input("True Draw Watts (Wall)", 50, 2000, 600)
+        true_watts = st.number_input("True Draw Watts (Wall)", 50, 2000, 480)
         light_type = st.selectbox("Light Tech", ["High-End LED (Bar)", "Budget LED (Quantum)", "HPS/CMH", "Blurple/CFL"])
-        co2_supplement = st.checkbox("CO2 Supplementation (>1200ppm)")
         
+    col3, col4 = st.columns(2)
     with col3:
         st.subheader("3. Biology")
         plant_count = st.number_input("Plant Count", 1, 50, 4)
         pot_size = st.number_input("Pot Size (Gallons)", 0.5, 30.0, 5.0)
+    with col4:
+        st.subheader("4. Technique")
         strain_type = st.selectbox("Genetics", ["Photoperiod Feminized", "Autoflower", "Regular/Bagseed"])
+        co2_supplement = st.checkbox("CO2 Supplementation (>1200ppm)")
         training = st.multiselect("Training Methods", ["Topping", "LST", "Scrog (Net)", "Mainlining"])
 
     # --- THE LOGIC ENGINE ---
@@ -110,10 +124,10 @@ with tab_yield:
 
     # --- FINAL CALCULATION ---
     # The yield is determined by the LOWEST of the three limits (Liebig's Law)
-    bottleneck = min(limit_light_g, limit_space_g, limit_root_g)
+    bottleneck_val = min(limit_light_g, limit_space_g, limit_root_g)
     
     # Apply Grower Skill and Training modifiers to the bottleneck
-    predicted_yield_g = bottleneck * grower_skill * train_mult * med_eff
+    predicted_yield_g = bottleneck_val * grower_skill * train_mult * med_eff
     
     # Hard cap logic (cannot exceed theoretical max of the light source significantly)
     max_physics = true_watts * 3.0
@@ -123,15 +137,18 @@ with tab_yield:
     st.divider()
     
     # Metric Cards
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2 = st.columns(2)
     m1.metric("Predicted Dry Weight", f"{predicted_yield_g:.0f} g", f"{(predicted_yield_g/28.35):.1f} oz")
     m2.metric("Efficiency (GPW)", f"{(predicted_yield_g/true_watts):.2f} g/w")
+    
+    m3, m4 = st.columns(2)
     m3.metric("Canopy Density", f"{(predicted_yield_g/sq_ft):.1f} g/sqft")
-    m4.metric("Market Value (@ $150/oz)", f"{currency_symbol}{((predicted_yield_g/28.35)*150):.0f}")
+    market_val = (predicted_yield_g/28.35)*150
+    m4.metric("Market Value (@ $150/oz)", f"{currency_symbol}{market_val:.0f}")
 
     # Bottleneck Analysis
     st.markdown("### 🔍 Bottleneck Analysis")
-    st.caption("Your yield is limited by the lowest bar below. Increase that factor to improve yield.")
+    st.caption("Your yield is limited by the lowest bar below (Liebig's Law). Increase that factor to improve yield.")
     
     chart_data = pd.DataFrame({
         "Factor": ["Light Limit", "Space Limit", "Root/Plant Limit"],
@@ -139,11 +156,11 @@ with tab_yield:
     })
     st.bar_chart(chart_data, x="Factor", y="Max Grams", color="#10b981")
     
-    if bottleneck == limit_light_g:
+    if bottleneck_val == limit_light_g:
         st.warning("⚠️ **Limiting Factor: LIGHT.** You have enough space and plants, but not enough wattage.")
-    elif bottleneck == limit_space_g:
+    elif bottleneck_val == limit_space_g:
         st.warning("⚠️ **Limiting Factor: SPACE.** Your tent is too small for this much equipment/plants.")
-    elif bottleneck == limit_root_g:
+    elif bottleneck_val == limit_root_g:
         st.warning("⚠️ **Limiting Factor: ROOTS.** Add more plants or bigger pots to utilize your light/space.")
 
 # ==========================================
@@ -188,21 +205,19 @@ with tab_power:
         for index, row in edited_df.iterrows():
             w = row['watts']
             
-            # Veg Calculation (18 hours on * duty cycle) for light, else 24h * duty
-            # Actually, duty cycle applies to the "Active Time". 
-            # For lights: Veg is 18h. Duty 1.0 = 18h.
-            # For fans: Veg is 24h. Duty 1.0 = 24h.
+            # Logic:
+            # For lights: Veg is 18h * duty. Flower is 12h * duty.
+            # For others: Veg is 24h * duty. Flower is 24h * duty.
             
-            # Simplified Logic:
-            # Light is special case.
-            if "Light" in row['name']:
-                kwh_veg = (w * 18 * row['veg_duty'] * days_veg) / 1000
-                kwh_flow = (w * 12 * row['flower_duty'] * days_flower) / 1000
-                kwh_dry = 0 # Lights off
-            else:
-                kwh_veg = (w * 24 * row['veg_duty'] * days_veg) / 1000
-                kwh_flow = (w * 24 * row['flower_duty'] * days_flower) / 1000
-                kwh_dry = (w * 24 * row['dry_duty'] * days_dry) / 1000
+            is_light = "Light" in row['name']
+            
+            veg_hours = 18 if is_light else 24
+            flow_hours = 12 if is_light else 24
+            dry_hours = 0 if is_light else 24
+            
+            kwh_veg = (w * veg_hours * row['veg_duty'] * days_veg) / 1000
+            kwh_flow = (w * flow_hours * row['flower_duty'] * days_flower) / 1000
+            kwh_dry = (w * dry_hours * row['dry_duty'] * days_dry) / 1000
             
             total_kwh += (kwh_veg + kwh_flow + kwh_dry)
             phase_costs["Veg"] += kwh_veg * kwh_cost
@@ -233,13 +248,15 @@ with tab_extract:
     col_in, col_calc = st.columns(2)
     
     with col_in:
-        input_amount_oz = st.number_input("Input Weight (oz)", value=float(predicted_yield_g/28.35))
+        # Default to the predicted yield from Tab 1
+        default_val = float(predicted_yield_g/28.35)
+        input_amount_oz = st.number_input("Input Weight (oz)", value=default_val)
         input_g = input_amount_oz * 28.35
         
     with col_calc:
         if input_type == "Dry Cured Flower":
             st.subheader("Flower Rosin")
-            return_rate = st.slider("Press Return %", 10, 30, 20)
+            return_rate = st.slider("Press Return %", 5, 30, 20)
             rosin_g = input_g * (return_rate / 100)
             st.metric("Expected Rosin", f"{rosin_g:.1f} g", f"Return: {return_rate}%")
             
@@ -247,7 +264,7 @@ with tab_extract:
             st.subheader("Live Rosin (Ice Water -> Press)")
             st.caption("WPFF contains water weight (approx 75-80%). Yields look lower vs wet weight.")
             
-            wash_yield = st.slider("Wash Yield (to Bubble Hash)", 1.0, 8.0, 4.0, help="3-5% is average for whole plant")
+            wash_yield = st.slider("Wash Yield (to Bubble Hash)", 0.5, 8.0, 3.5, help="3-5% is average for whole plant")
             press_yield = st.slider("Press Yield (Hash to Rosin)", 40, 90, 75)
             
             hash_g = input_g * (wash_yield / 100)
